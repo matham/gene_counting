@@ -39,11 +39,14 @@ day = ['1', '2', '4', '6']
 delay = ['pre', '0', '15', '30', '60']
 
 
-GeneProduct = namedtuple(
-    'GeneProduct',
-    ['day', 'delay', 'region', 'row', 'gene', 'reps', 'avg', 'stdev', 'ng',
-     'dct', 'ddct', 'amount']
-)
+class GeneProduct(object):
+
+    __slots__ = ('day', 'delay', 'region', 'row', 'gene', 'reps', 'avg',
+                 'stdev', 'ng', 'dct', 'ddct', 'amount')
+
+    def __init__(self, *largs):
+        for name, val in zip(self.__slots__, largs):
+            setattr(self, name, val)
 
 
 def pad_to(list_like, pad, val=''):
@@ -51,6 +54,18 @@ def pad_to(list_like, pad, val=''):
     if len(res) >= pad:
         return res
     return res + [val] * (pad - len(res))
+
+
+def get_values(data, attr, sort_order):
+    items = list(set([getattr(item, attr) for item in data]))
+    vals = []
+    for val in sort_order:
+        if val in items:
+            vals.append(val)
+            items.remove(val)
+
+    assert not items
+    return vals
 
 
 def read_data(filename, ignore_rep_errors=True):
@@ -94,7 +109,7 @@ def read_data(filename, ignore_rep_errors=True):
                     float, [r for r in reps if r or not ignore_rep_errors])
                 item = GeneProduct(
                     day, delay, region, i, g, np.array(reps),
-                    float(avg), float(stdev), float(ng), None, None, None
+                    float(avg), float(stdev), float(ng)
                 )
             except ValueError:
                 print('Skipping "{}" from row "{}"'.format(
@@ -180,7 +195,8 @@ def compute_amount(data):
 
 
 def plot_data(data, output, x1='delay', x2=None):
-    selection = {'gene': gene, 'region': region, 'day': day, 'delay': delay}
+    keys = 'gene', 'region', 'day', 'delay'
+    selection = {k: get_values(data, k, globals()[k]) for k in keys}
     x1_labels = selection.pop(x1)
     x2_labels = selection.pop(x2, None)
     variables = selection.keys()  # the variables which are constant for a plot
@@ -203,6 +219,21 @@ def plot_data(data, output, x1='delay', x2=None):
                 sorted_data[getattr(item, x1)].append(item)
             else:
                 sorted_data[getattr(item, x2)][getattr(item, x1)].append(item)
+
+        with open(join(output, 'binned_data.csv'), 'ab') as fh:
+            if x2 is None:
+                for key, vals in sorted_data.items():
+                    fh.write(','.join(
+                        list(spec) + [key] +
+                        map(str, [v for val in vals for v in val.amount])))
+                    fh.write('\n')
+            else:
+                for x2_key, x2_vals in sorted_data.items():
+                    for x1_key, vals in x2_vals.items():
+                        fh.write(','.join(
+                            list(spec) + [x1_key, x2_key] +
+                            map(str, [v for val in vals for v in val.amount])))
+                        fh.write('\n')
 
         # now, we have the data sorted by x1/x2 and we just need to do the plot
         fig_spec = []
@@ -289,14 +320,16 @@ if __name__ == '__main__':
     filename = r'C:\Users\Matthew Einhorn\Desktop\20150903a_Analysis_JP.csv'
     output = r'C:\Users\Matthew Einhorn\Desktop\Michelle\figures'
     data = read_data(filename)
-#     data = filter_data(data, gene=gene_hk + gene)
-#     buff = format_csv(data)
-#     print select_housekeepr(buff, 'r{}'.format(data[0].row))
-#     exit()
-    data = filter_data(data, region=region[:-1])
+    data = filter_data(data, gene=gene_hk + gene, region=region[:-1])
+
+    buff = format_csv(data)
+    print(select_housekeepr(buff, 'r{}'.format(data[0].row)))
+
     normalize_to_housekeeping(data, housekeepers=gene_hk[:1])
     normalize_dct_to_baseline(data, norm_key='delay', norm_val='pre',
                               norm_hash=('gene', 'region'))
     compute_amount(data)
+
+    data = filter_data(data)
     dump_data(data, join(output, 'processed_data.csv'))
-    plot_data(data, output, x1_normed=True, x2='day')
+    plot_data(data, output, x2='day')
