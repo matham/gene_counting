@@ -9,6 +9,7 @@ from os.path import join, exists
 from os import mkdir
 from scipy import stats
 import matplotlib
+from matplotlib.lines import Line2D
 import eleven
 try:
     from StringIO import StringIO
@@ -116,7 +117,7 @@ def get_values(data, attr, sort_order):
     return vals
 
 
-def remove_outliers(data):
+def remove_outliers(data, remove_str=False):
     '''Removes from data the bad GeneProduct items that are pre-specified
     outliers.
     Returns a new filtered data list.
@@ -126,6 +127,48 @@ def remove_outliers(data):
     for item in data:
         if item.plate == '2' and item.region in ('CTX', 'STR') and item.gene in ('FOS', 'PRKR2A'):
             continue
+        if item.name in ('B15 CTX; Train:1; Time:0',
+                         'A11 CTX; Train:4; Time:pre',
+                         'A9 CTX; Train:4; Time:15',
+                         'C14 CTX; Train:6; Time:0') and item.gene == 'PRKR2B':
+                continue
+        if remove_str:
+            if item.region == 'STR':
+                continue
+        else:
+            if item.region == 'STR' and item.gene == 'ARC' and item.day == '2' and item.delay == '30':
+                continue
+        res.append(item)
+    return res
+
+
+def remove_outliers2(data):
+    '''Removes from data the bad GeneProduct items that are pre-specified
+    outliers from the second run.
+    Returns a new filtered data list.
+    '''
+    res = []
+    bad = [('B11 STR; Train:1; Time:pre', 'BDNF1'),
+           ('A1 STR; Train:4; Time:pre', 'BDNF1'),
+           ('B1 OB; Train:1; Time:0', 'ERK1'),
+           ('B1 OB; Train:1; Time:0', 'ERK2'),
+           ('B11 STR; Train:1; Time:pre', 'FOS'),
+           ('A1 STR; Train:4; Time:pre', 'FOS'),
+           ('B11 STR; Train:1; Time:pre', 'PRKR2A'),
+           ('A1 STR; Train:4; Time:pre', 'PRKR2A'),
+           ('B1 CTX; Train:1; Time:0', 'PRKR2B'),
+           ('C6 CTX; Train:6; Time:0', 'PRKR2B')]
+
+    for item in data:
+        name, gene = item.name, item.gene
+        if (name, gene) in bad:
+            continue
+        if item.region == 'CTX' and gene == 'PRKR2B':
+            continue
+        if name == '1G STR; Train:2; Time:0' and gene == 'CREB1':
+            item.reps = item.reps[:1]
+        if name == 'B6 STR; Train:1; Time:pre' and gene == 'CREB1':
+            item.reps = item.reps[:2]
         res.append(item)
     return res
 
@@ -193,20 +236,21 @@ def read_data(filename):
                 # found a col that matches this gene, find the type
                 selector = name.split('_')[1].lower()
                 if selector == 'ng':
-                    ng = val
+                    ng = val.strip()
                 elif selector == 'avg':
-                    avg = val
+                    avg = val.strip()
                 elif selector == 'stdev':
-                    stdev = val
+                    stdev = val.strip()
                 else:
-                    reps.append(val)
+                    reps.append(val.strip())
 
             try:
                 reps = map(float, [r for r in reps if r])
                 reps = np.array(reps)
                 item = GeneProduct(
                     mouse_id, day, delay, region, i, g, reps,
-                    float(avg), float(stdev), float(ng), plate=plate_id
+                    float(avg) if avg else 0., float(stdev) if stdev else 0.,
+                    float(ng) if ng else 0., plate=plate_id
                 )
             except ValueError:
                 print('Skipping "{}" from row "{}"'.format(
@@ -440,7 +484,10 @@ def get_unique_dir_name(ddct, scatter, x3, genes, gene_i, exp_domain, mean_func,
         if mean_func is gmean:
             name = '{}, gmean'.format(name)
     if filter_outliers:
-        name = '{}, no_outliers'.format(name)
+        if filter_outliers == 'str':
+            name = '{}, no_outliers_w_str'.format(name)
+        else:
+            name = '{}, no_outliers'.format(name)
     name = '{}, hk={}'.format(name, ','.join(gene_housek))
     return name
 
@@ -552,10 +599,11 @@ def show_plot1(ax, data, title, x1label, x1_labels, show_bars, avg_reps, ylabel=
 
 def show_plot2(ax, data, title, x1label, x1_labels, x2_labels, show_bars, avg_reps,
                show_ylabel=True, show_legend=True, show_error=True, ylabel=''):
-    rects = [None, ] * len(x2_labels)
     width = (1 - .2) / float(len(x2_labels))
+    markers = ['o', '>', 'd', 's', 'H']
     cm = plt.get_cmap('brg')
-    colors = [cm(1. * i / len(x2_labels)) for i in range(len(x2_labels))]
+    #colors = [cm(1. * i / float(len(x2_labels))) for i in range(len(x2_labels))]
+    colors = ('g', 'r', 'm', 'y', 'c', 'k', 'b')
 
     data2 = defaultdict(dict)
     for (k1, k2, k3), values in data.items():
@@ -563,11 +611,13 @@ def show_plot2(ax, data, title, x1label, x1_labels, x2_labels, show_bars, avg_re
     data = data2
     max_val, min_val = 0, 1000
 
-    for i, (label2, color) in enumerate(zip(x2_labels, colors)):
+    legend = []
+    found = False
+    for i, (label2, color, marker) in enumerate(zip(x2_labels, colors, markers)):
         if label2 not in data:
             print('Cannot find "{}" for {}'.format(label2, title))
             continue
-
+        found = True
         res = np.zeros(len(x1_labels))
         err = np.zeros(len(x1_labels))
         x1_data = data[label2]
@@ -595,7 +645,7 @@ def show_plot2(ax, data, title, x1label, x1_labels, x2_labels, show_bars, avg_re
             assert items
             res[l] = np.mean(items)
             err[l] = stats.sem(items)
-            dot_colors = [cm(1. * j / len(curr_items)) for j in range(len(curr_items))]
+            # dot_colors = [cm(1. * j / len(curr_items)) for j in range(len(curr_items))]
 #             for c, item in zip(dot_colors, curr_items):
 #                 ax.scatter([xp[l] + width / 2.] * len(item.amount), item.amount, marker='.', color=c, s=40)
 
@@ -606,35 +656,38 @@ def show_plot2(ax, data, title, x1label, x1_labels, x2_labels, show_bars, avg_re
             max_val, min_val = max(np.max(res), max_val), min(np.min(res), min_val)
 
         if show_bars:
-            rects[i] = ax.bar(xp, res, width, color=color, ecolor='k', yerr=err, label=label2)
+            p = ax.bar(xp, res, width, color=color, ecolor='k', yerr=err, label=label2)
+            legend.append(p)
             for l, val in enumerate(res):
                 ax.plot([l + i * width, l + (i + 1) * width], [val, val], color='k')
         elif show_error:
+            p,  = ax.plot(x, res, '-', marker=marker, color=color, markersize=12)
             ax.errorbar(x, res, color=color, ecolor=color, yerr=err, label=label2)
-            ax.plot(x, res, '.-', color=color, markersize=20)
+            legend.append(p)
         else:
+            p = ax.scatter(xdata, ydata, marker=marker, color=color, s=60)
             ax.plot(x, res, '-', color=color, label=label2)
-            ax.scatter(xdata, ydata, marker='.', color=color, s=60)
+            legend.append(p)
 
     if show_ylabel:
         ax.set_ylabel(ylabel, **font)
     ax.set_xlabel(x1label.capitalize(), **font)
-    if show_bars:
+    if show_bars and found:
         ax.set_xticks(np.arange(len(x1_labels)) + 2 * width)
         if show_labels:
-            ax.legend([rect[0] for rect in rects], x2_labels, **font)
-    else:
+            ax.legend([rect[0] for rect in legend], x2_labels, numpoints=1, **font)
+    elif found:
         ax.set_xticks(x)
         ax.set_xlim([-.25, len(x) - .75])
         if show_legend:
-            ax.legend()
+            ax.legend(legend, x2_labels, numpoints=1, scatterpoints=1)
     ax.set_xticklabels(x1_labels)
     ax.set_title(title)
     return max_val, min_val
 
 
 if __name__ == '__main__':
-    filename = r'C:\Users\Matthew Einhorn\Desktop\20150903a_Analysis_JP.csv'
+    filename = r'C:\Users\Matthew Einhorn\Desktop\Michelle\11.23.15 Processed full data with new data for plate 2 included_MR.csv'
     behavior_filename = r'C:\Users\Matthew Einhorn\Desktop\Michelle\behavior data.csv'
     output = r'C:\Users\Matthew Einhorn\Desktop\Michelle\figures'
 
@@ -648,7 +701,7 @@ if __name__ == '__main__':
             for mean_func in (np.mean, gmean) if exp_domain else (None, ):
                 for scatter in ('scatter', 'error_bars', ):
                     for x3 in ('day', 'gene', 'region'):
-                        for filter_outliers in (True, False):
+                        for filter_outliers in (False, True):  # (True, False, 'str'):
                             for gene_housek in (gene_hk[:1], ):
                                 if x3 == 'gene':
                                     genes = [['ARC', 'EGR1', 'FOS'],
@@ -667,7 +720,8 @@ if __name__ == '__main__':
                                         item.clear_computed_fields()
 
                                     if filter_outliers:
-                                        data = remove_outliers(data)
+                                        # data = remove_outliers(data, remove_str=filter_outliers != 'str')
+                                        data = remove_outliers2(data)
 
                                     buff = format_csv(data)
                                     print(select_housekeepr(buff, 'r{}'.format(data[0].row)))
